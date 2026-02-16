@@ -3,43 +3,116 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Unity Counter Test</title>
+  <title>Paul Bunyan Vote</title>
   <style>
     body { font-family: system-ui, sans-serif; background:#111; color:#fff; margin:0; display:flex; min-height:100vh; align-items:center; justify-content:center; }
-    .wrap { width:min(520px, 92vw); text-align:center; }
-    button { width:100%; padding:20px; font-size:24px; border-radius:16px; border:none; cursor:pointer; }
-    .small { opacity:0.85; margin-top:12px; }
-    .count { font-size:48px; margin:18px 0; }
+    .wrap { width:min(560px, 92vw); text-align:center; }
+    .prompt { font-size:22px; margin:12px 0; opacity:0.95; }
+    .counts { display:flex; gap:10px; justify-content:center; opacity:0.85; margin-bottom:10px; }
+    .pill { padding:8px 12px; border-radius:999px; background:#222; }
+    button { width:100%; padding:18px; font-size:22px; border-radius:16px; border:none; cursor:pointer; margin:10px 0; }
+    .disabled { opacity:0.5; pointer-events:none; }
+    .small { opacity:0.8; font-size:14px; margin-top:10px; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>Click to Increment</h1>
-    <div class="count" id="count">0</div>
-    <button id="btn">+1</button>
+    <h1>Vote</h1>
+    <div class="prompt" id="prompt">Waiting for next choice…</div>
+
+    <div class="counts">
+      <div class="pill" id="countA">A: 0</div>
+      <div class="pill" id="countB">B: 0</div>
+    </div>
+
+    <button id="btnA">A</button>
+    <button id="btnB">B</button>
+
     <div class="small" id="status">Connecting…</div>
   </div>
 
 <script>
-  const countEl = document.getElementById("count");
+  // stable device id for "one vote per round"
+  const VOTER_KEY = "pb_voter_id";
+  let voterId = localStorage.getItem(VOTER_KEY);
+  if (!voterId) {
+    voterId = crypto.randomUUID();
+    localStorage.setItem(VOTER_KEY, voterId);
+  }
+
+  const promptEl = document.getElementById("prompt");
   const statusEl = document.getElementById("status");
-  const btn = document.getElementById("btn");
+  const btnA = document.getElementById("btnA");
+  const btnB = document.getElementById("btnB");
+  const countAEl = document.getElementById("countA");
+  const countBEl = document.getElementById("countB");
+
+  let roundActive = false;
+  let choiceId = "";
+
+  function setEnabled(on) {
+    btnA.classList.toggle("disabled", !on);
+    btnB.classList.toggle("disabled", !on);
+  }
+
+  function setLabels(aLabel, bLabel) {
+    btnA.textContent = aLabel || "A";
+    btnB.textContent = bLabel || "B";
+  }
+
+  function setCounts(a, b) {
+    countAEl.textContent = `A: ${a ?? 0}`;
+    countBEl.textContent = `B: ${b ?? 0}`;
+  }
 
   const wsProto = location.protocol === "https:" ? "wss://" : "ws://";
   const ws = new WebSocket(wsProto + location.host);
 
-  ws.onopen = () => statusEl.textContent = "Connected";
-  ws.onclose = () => statusEl.textContent = "Disconnected";
-  ws.onerror = () => statusEl.textContent = "Error";
+  ws.onopen = () => { statusEl.textContent = "Connected"; };
+  ws.onclose = () => { statusEl.textContent = "Disconnected"; setEnabled(false); };
+  ws.onerror = () => { statusEl.textContent = "Error"; setEnabled(false); };
 
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
-    if (msg.type === "state") countEl.textContent = msg.count;
+
+    if (msg.type === "state" || msg.type === "roundStarted") {
+      roundActive = !!msg.roundActive || msg.type === "roundStarted";
+      choiceId = msg.choiceId || "";
+
+      setLabels(msg.labelA, msg.labelB);
+      setCounts(msg.a, msg.b);
+
+      promptEl.textContent = roundActive
+        ? (choiceId ? `Choose: ${choiceId}` : "Vote now!")
+        : "Waiting for next choice…";
+
+      setEnabled(roundActive);
+    }
+
+    if (msg.type === "voteUpdate") {
+      setCounts(msg.a, msg.b);
+    }
+
+    if (msg.type === "roundEnded") {
+      roundActive = false;
+      setEnabled(false);
+      setCounts(msg.a, msg.b);
+      promptEl.textContent = (msg.winner === "TIE")
+        ? "Tie! Waiting for next choice…"
+        : `Winner: ${msg.winner}`;
+    }
   };
 
-  btn.onclick = () => {
-    ws.send(JSON.stringify({ type: "increment" }));
-  };
+  function vote(choice) {
+    if (!roundActive) return;
+    ws.send(JSON.stringify({ type:"vote", choiceId, choice, voterId }));
+    // client-side disable after voting (nice UX). Server enforces too.
+    setEnabled(false);
+  }
+
+  btnA.onclick = () => vote("A");
+  btnB.onclick = () => vote("B");
+  setEnabled(false);
 </script>
 </body>
 </html>
